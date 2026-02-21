@@ -150,21 +150,27 @@ def run_backtests(ticker, start_date, end_date, initial_capital):
         
     data['Strategy_Equity'] = daily_equity
     return data, pd.DataFrame(trade_log), bnh_final
-
 # ==============================================================================
 # UI RENDERING
 # ==============================================================================
 st.sidebar.header("⚙️ Strategy Parameters")
 default_tickers = ["COCHINSHIP.NS", "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "TATAMOTORS.NS"]
-ticker = st.sidebar.selectbox("Select or Type NSE Ticker", default_tickers, index=0, format_func=lambda x: x)
-custom_ticker = st.sidebar.text_input("Or enter custom ticker (e.g., ZOMATO.NS):")
-if custom_ticker: ticker = custom_ticker.upper()
+ticker_selection = st.sidebar.selectbox("Select a popular NSE Ticker", default_tickers, index=0)
+
+# Added instructions to clear the box
+custom_ticker = st.sidebar.text_input("Or type custom ticker (leave blank to use dropdown):", value="")
+
+# Smarter logic: Only use custom ticker if the user actually typed something
+if custom_ticker.strip():
+    ticker = custom_ticker.upper().strip()
+else:
+    ticker = ticker_selection
 
 start_date = st.sidebar.date_input("Start Date", datetime(2023, 1, 1))
 end_date = st.sidebar.date_input("End Date", datetime(2026, 2, 21))
 initial_cap = st.sidebar.number_input("Initial Capital (₹)", value=100000, step=10000)
 
-if st.sidebar.button("Run Backtest", type="primary"):
+if st.sidebar.button(f"Run Backtest for {ticker}", type="primary"):
     with st.spinner(f"Analyzing {ticker}..."):
         passed, msg = execute_fundamental_screen(ticker)
         
@@ -180,12 +186,14 @@ if st.sidebar.button("Run Backtest", type="primary"):
             data, trades, bnh_final = run_backtests(ticker, start_date, end_date, initial_cap)
             
             if data is None or data.empty:
-                st.error("No price data found. Please check the ticker symbol and dates.")
+                st.error(f"No price data found for {ticker}. Please check the ticker symbol.")
             else:
                 final_strat_cap = data['Strategy_Equity'].iloc[-1]
                 strat_return = ((final_strat_cap / initial_cap) - 1) * 100
                 bnh_return = ((bnh_final / initial_cap) - 1) * 100
                 
+                # Added the ticker name to the top of the metrics
+                st.subheader(f"Performance Metrics: {ticker}")
                 col1, col2, col3, col4 = st.columns(4)
                 col1.metric("Strategy Final Capital", f"₹{final_strat_cap:,.0f}", f"{strat_return:.1f}%")
                 col2.metric("Buy & Hold Final Capital", f"₹{bnh_final:,.0f}", f"{bnh_return:.1f}%", 
@@ -193,7 +201,8 @@ if st.sidebar.button("Run Backtest", type="primary"):
                 col3.metric("Strategy Total Trades", len(trades) if not trades.empty else 0)
                 col4.metric("Strategy Win vs B&H", f"₹{(final_strat_cap - bnh_final):,.0f}")
                 
-                st.markdown("### 📊 Equity Curve Comparison")
+                # Added the ticker name to the chart title
+                st.markdown(f"### 📊 Equity Curve Comparison: {ticker}")
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(x=data.index, y=data['Strategy_Equity'], mode='lines', name='Swing Strategy', line=dict(color='#00ff00', width=2)))
                 fig.add_trace(go.Scatter(x=data.index, y=data['Buy_Hold_Equity'], mode='lines', name='Buy & Hold', line=dict(color='#888888', width=2, dash='dot')))
@@ -205,4 +214,8 @@ if st.sidebar.button("Run Backtest", type="primary"):
                     total_costs = trades['Total_Costs'].sum()
                     st.info(f"Total Taxes & Brokerage Paid: **₹{total_costs:,.0f}**")
                 else:
-                    st.info("No trades executed during this period based on your strategy rules.")
+                    st.info(f"No trades executed for {ticker} during this period based on your strategy rules.")
+
+
+            
+            
