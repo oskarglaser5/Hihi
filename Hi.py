@@ -1,6 +1,5 @@
 import streamlit as st
 import yfinance as yf
-import requests
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -70,58 +69,48 @@ def compute_technical_features(df):
     df['Volume_MA_20'] = df['Volume'].rolling(20).mean()
     
     return df
-# ==============================================================================
-# BROWSER SESSION (Bypasses basic Yahoo Rate Limits)
-# ==============================================================================
-# We create a custom session to make our script look like a standard web browser
-custom_session = requests.Session()
-custom_session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-})
 
 # ==============================================================================
-# FUNDAMENTAL SCREENING (With Rate-Limit Fallback)
+# FUNDAMENTAL SCREENING (With yfinance auto-handling)
 # ==============================================================================
 @st.cache_data(show_spinner=False)
 def execute_fundamental_screen(ticker):
     try:
-        # Pass the custom browser session to yfinance
-        info = yf.Ticker(ticker, session=custom_session).info
+        # We now let yfinance handle the connection natively
+        info = yf.Ticker(ticker).info
         
-        # Sometimes yfinance returns an empty dictionary when stealth-blocked
         if not info:
-            return True, "Yahoo Rate Limit hit. Bypassing fundamental screen."
+            return True, "Yahoo API returned empty. Bypassing fundamental screen."
 
         if info.get('trailingEps', 0) <= 0: return False, "Negative/Zero EPS"
         if info.get('debtToEquity', 100) > 50: return False, "High Debt-to-Equity"
         return True, "Passed"
         
     except Exception as e:
-        error_str = str(e)
-        # If we hit a hard 429 Rate Limit error, don't break the app. 
-        # Pass it through so the user can still see the technical backtest.
-        if "Too Many Requests" in error_str or "Rate limited" in error_str or "429" in error_str:
+        error_str = str(e).lower()
+        # If Yahoo still acts up, we gracefully bypass the screen so your chart still loads!
+        if "429" in error_str or "rate limit" in error_str or "too many requests" in error_str:
             return True, "Yahoo Rate Limit hit. Bypassing fundamental screen to allow backtest."
-        return False, f"Data Error: {error_str}"
+        return False, f"Data Error: {str(e)}"
 
 # ==============================================================================
 # STRATEGY & BUY-AND-HOLD ENGINE
 # ==============================================================================
 @st.cache_data(show_spinner=False)
 def run_backtests(ticker, start_date, end_date, initial_capital):
-    # Pass the custom session here as well
-    data = yf.download(ticker, start=start_date, end=end_date, session=custom_session, progress=False)
+    # Removed the custom session here as well
+    data = yf.download(ticker, start=start_date, end=end_date, progress=False)
     if data.empty: return None, None, None
     
     data = compute_technical_features(data).dropna()
     
-    # 1. Buy & Hold Calculation
+    # Buy & Hold Calculation
     bnh_qty = int(initial_capital / data['Close'].iloc[0])
     data['Buy_Hold_Equity'] = initial_capital - (bnh_qty * data['Close'].iloc[0]) + (bnh_qty * data['Close'])
     bnh_economics = calculate_trade_economics(data['Close'].iloc[0], data['Close'].iloc[-1], bnh_qty)
     bnh_final = initial_capital + bnh_economics['net_pnl']
     
-    # 2. Swing Strategy Calculation
+    # Swing Strategy Calculation
     capital = initial_capital
     position_qty, entry_price, stop_loss, take_profit = 0, 0, 0, 0
     trade_log, daily_equity = [], []
@@ -163,13 +152,10 @@ def run_backtests(ticker, start_date, end_date, initial_capital):
     data['Strategy_Equity'] = daily_equity
     return data, pd.DataFrame(trade_log), bnh_final
 
-
 # ==============================================================================
 # UI RENDERING
 # ==============================================================================
-# Sidebar
 st.sidebar.header("⚙️ Strategy Parameters")
-# Popular NSE stocks pre-filled, but allows typing any ticker
 default_tickers = ["COCHINSHIP.NS", "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "TATAMOTORS.NS"]
 ticker = st.sidebar.selectbox("Select or Type NSE Ticker", default_tickers, index=0, format_func=lambda x: x)
 custom_ticker = st.sidebar.text_input("Or enter custom ticker (e.g., ZOMATO.NS):")
@@ -187,8 +173,11 @@ if st.sidebar.button("Run Backtest", type="primary"):
             st.error(f"**Fundamental Screen Failed for {ticker}**: {msg}")
             st.warning("The strategy halts here to protect capital based on fundamental rules.")
         else:
-            st.success(f"**{ticker}** passed fundamental screening. Running technical backtest...")
-            
+            if "Bypassing" in msg:
+                st.warning(f"⚠️ {msg}")
+            else:
+                st.success(f"**{ticker}** passed fundamental screening.")
+                
             data, trades, bnh_final = run_backtests(ticker, start_date, end_date, initial_cap)
             
             if data is None or data.empty:
@@ -198,7 +187,6 @@ if st.sidebar.button("Run Backtest", type="primary"):
                 strat_return = ((final_strat_cap / initial_cap) - 1) * 100
                 bnh_return = ((bnh_final / initial_cap) - 1) * 100
                 
-                # Metrics Row
                 col1, col2, col3, col4 = st.columns(4)
                 col1.metric("Strategy Final Capital", f"₹{final_strat_cap:,.0f}", f"{strat_return:.1f}%")
                 col2.metric("Buy & Hold Final Capital", f"₹{bnh_final:,.0f}", f"{bnh_return:.1f}%", 
@@ -206,7 +194,6 @@ if st.sidebar.button("Run Backtest", type="primary"):
                 col3.metric("Strategy Total Trades", len(trades) if not trades.empty else 0)
                 col4.metric("Strategy Win vs B&H", f"₹{(final_strat_cap - bnh_final):,.0f}")
                 
-                # Interactive Plotly Chart
                 st.markdown("### 📊 Equity Curve Comparison")
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(x=data.index, y=data['Strategy_Equity'], mode='lines', name='Swing Strategy', line=dict(color='#00ff00', width=2)))
@@ -214,7 +201,6 @@ if st.sidebar.button("Run Backtest", type="primary"):
                 fig.update_layout(height=500, xaxis_title="Date", yaxis_title="Portfolio Value (₹)", template="plotly_dark", hovermode="x unified")
                 st.plotly_chart(fig, use_container_width=True)
 
-                # Cost analysis
                 if not trades.empty:
                     st.markdown("### 💸 Frictional Cost Drag (Strategy)")
                     total_costs = trades['Total_Costs'].sum()
